@@ -26,7 +26,6 @@ The data set (rioolympics.csv) file contains observations for each of the countr
 
 ## Installation & Usage
 To reproduce the results:
-
 * Clone a copy of this repository to your computer
 * Extract all the files from the zip folder
 * Install all the packages mentioned in requirements.txt file
