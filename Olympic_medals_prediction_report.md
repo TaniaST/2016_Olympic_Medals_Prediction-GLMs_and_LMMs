@@ -600,13 +600,13 @@ We can also compare the performance metrics for the models, based on the
 
 |                           |  RMSE |   MAE |
 | ------------------------- | ----: | ----: |
-| WSJ                       | 12.02 | 10.17 |
 | Goldman Sachs             | 10.89 |  9.17 |
 | Gonzales (Tuck School)    | 11.19 |  9.17 |
-| Forrest                   | 15.75 | 14.83 |
 | Bredtmann                 | 11.37 |  8.50 |
-| Kupper                    | 17.14 | 13.50 |
+| WSJ                       | 12.02 | 10.17 |
 | LMM with random intercept | 13.18 | 10.83 |
+| Forrest                   | 15.75 | 14.83 |
+| Kupper                    | 17.14 | 13.50 |
 
 As demonstrated above, our model is the 5th best performing, leaving
 behind Forrest and Kupper models. Obviously, this comparison is quite
