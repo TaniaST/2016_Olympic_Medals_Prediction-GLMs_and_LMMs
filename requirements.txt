@@ -1,0 +1,6 @@
+To run the code and reproduce the findings, the following packages in R must be installed:
+install.packages("pscl")
+install.packages("gamlss")
+install.packages("forecast")
+install.packages("cAIC4")
+install.packages("knitr")

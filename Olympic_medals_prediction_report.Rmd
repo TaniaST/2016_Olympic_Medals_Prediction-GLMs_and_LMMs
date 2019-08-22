@@ -1,0 +1,809 @@
+---
+author: "Tetiana Stroganova"
+date: "26/07/2019"
+documentclass: report
+fontsize: 12pt
+output: rmarkdown::github_document
+---
+## Predicting the 2016 Olympic Medals Using General Linear Models and Linear Mixed Models
+
+
+*****
+## 1.	Introduction
+The goal of the project is to predict the total number of medals won by each country in 2016 Olympics based on several predictors available before August 2016. The questions of interest are the following:
+
+* Which variables are associated with the total number of medals won by each country in 2012?
+* How well does the model predict the 2016 results?
+* What improvements might be made to the model/data collected to increase the predicting performance?
+
+## 2.	Data description and methodology
+### 2.1	Data description
+```{r echo=FALSE, warning=FALSE, message=FALSE, eval= FALSE}
+# To run the code and reproduce the findings, the following packages in R must be installed:
+install.packages("pscl")
+install.packages("gamlss")
+install.packages("forecast")
+install.packages("cAIC4")
+install.packages("knitr")
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#loading the needed libraries:
+library(forecast)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(MASS)
+library(pscl)
+library(gamlss)
+library(tidyr)
+library(lme4)
+library(cAIC4)
+library(gridExtra)
+library(knitr)
+
+#loading data
+oldat <- read.csv("rioolympics.csv")
+
+```
+The data set rioolympics.csv contains observations for each of the countries - participants of 2016 Rio Olympics with the following variables (all the YY variables are for 2000, 2004, 2008, 2012 and 2016 years):
+
+Numerical variables:
+
+* **gdpYY**: the country’s GPD in millions of US dollars during year YY, 
+* **popYY**: the country’s population in thousands in year YY, 
+* **goldYY**: number of gold medals won in the YY Olympics,
+* **totYY**: total number of medals won in the YY Olympics, 
+* **totgoldYY**: overall total number of gold medals awarded in the YY Olympics, 
+* **totmedalsYY**: overall total number of all medals awarded in the YY Olympics, 
+* **bmi**: average BMI (not differentiating by gender), 
+* **altitude**: altitude of the country’s capital city, 
+* **athletesYY**: number of athletes representing the country in the YY Olympics.
+
+Categorical variables:
+
+* **country**: the country’s name,
+* **country.code**: the country’s three-letter code,
+* **soviet**: 1 if the country was part of the former Soviet Union, 0 otherwise, 
+* **comm**: 1 if the country is a former/current communist state, 0 otherwise, 
+* **muslim**: 1 if the country is a Muslim majority country, 0 otherwise, 
+* **oneparty**: 1 if the country is a one-party state, 0 otherwise, 
+* **host**: 1 if the country has hosted/is hosting/will be hosting the Olympics, 0 otherwise.
+
+### 2.2	Handling missing data
+The exploration of the data has revealed that there are three columns with missing data: bmi, gdp00 and gdp16. The bmi column missing values are for the following countries: Armenia, Azerbaijan, Bahamas, Bahrain, Botswana, Cameroon, Cyprus, Czech Republic, Dominican Republic, Fiji, Gabon, Georgia, Guatemala, Ivory Coast, Kosovo, Kyrgyzstan, Mongolia, Niger, Paraguay, Puerto Rico, Sudan, Tajikistan, Togo, Trinidad and Tobago, Uganda, Uzbekistan, Zimbabwe. The missing values have been inserted for all [countries](https://en.wikipedia.org/wiki/List_of_countries_by_body_mass_index#WHO_Data_on_Mean_BMI_(2014)), except Kosovo and Puerto Rico, where the data is not available. These two missing values have been replaced with the overall mean of the bmi column (excluding the missing values). The missing values in gdp00 ( [Afghanistan](https://countryeconomy.com/gdp/afghanistan?year=2000) ) and gdp16 ( [Cuba ](https://countryeconomy.com/gdp/cuba) and [Syrian Arab Republic](https://countryeconomy.com/gdp/syria) ) columns have also been filled in.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+#checking for NAs in columns bmi and gdp00 and gdp16 columns
+
+#handling BMI column missing values 
+oldat[oldat$bmi=="#N/A",]
+#preparing and inserting missing values for bmi column:
+countr<-oldat[oldat$bmi=="#N/A",c(1)]
+
+j<-c(26.7, 27.4, 28.4, 28.2, 24.7, 24.4, 27, 26.9, 26.7, 27.2, 25.5, 27.2, 26.5, 23.6, 0, 26.2, 26, 21.7, 25.8, 0, 25.2, 25.4,23.2,28.7,22,26.1,23.4)
+newbmi<-data.frame("country"=countr,"bmi"=as.numeric(j))
+
+countrbmi<-oldat[oldat$bmi!="#N/A",c(1,37)]
+countrbmi$bmi<-as.numeric(as.character(countrbmi$bmi))
+countrbmi<-rbind(newbmi,countrbmi)
+countrbmi
+colnames(countrbmi)<-c("country","newbmi")
+oldat<-inner_join(oldat,countrbmi,by="country")
+oldat$bmi<-as.numeric(oldat$newbmi)
+#we've inserted all the values except Kosovo and Puerto Rico, we temporarily inserted zeros for them. These values are not available, so we'll replace them with an overall mean (excluding these two missing values)
+mean(oldat[oldat$bmi!=0,37])
+oldat$bmi<-ifelse(oldat$bmi==0,mean(oldat[oldat$bmi!=0,37]),oldat$bmi)
+#deleting the temporary newbmi column
+oldat$newbmi<-NULL
+
+#Handling gdp00 missing data
+oldat[oldat$gdp00=="#N/A",]
+#only one value is missing - the one for Afghanistan, let's insert it:
+
+oldat$gdp00<-as.numeric(as.character(oldat$gdp00))
+oldat[oldat$country=="Afghanistan",3]<-3532
+oldat$gdp00
+str(oldat)
+
+#Handling gdp16 missing data
+oldat[oldat$gdp16=="#N/A",]
+oldat$gdp16<-as.numeric(as.character(oldat$gdp16))
+oldat[oldat$country=="Cuba",7]<-91370
+oldat[oldat$country=="Syrian Arab Republic",7]<-12377
+```
+### 2.3	Methodology
+ Two different approaches were used for the analysis: the wide format and the longitudinal analysis. Before explaining each method, it’s worth mentioning that in both approaches, the gdp parameter was not used as such but was transformed into gdp_per_cap – GDP per capita (dividing GDP by population) for a better comparison. Let us now describe the two methods.
+ 
+#### 2.3.1 Wide format analysis
+Initially, the data set was presented in wide format, so each measurement of the same variable taken at different points of time was considered as a separate variable. To avoid repetition in the analysis, the mean values have been used instead of separate measurements for each of these time-related numerical predictors (gdp, pop, tot, gold, athletes). As taking the mean of total number of medals awarded would result in a single number for the whole data set, this variable would not have any impact on the fitted model, so the totgold and totmedals predictors have not been included in the wide format analysis. The data have then been split in training and test sets. The final training set contains all the categorical and non-time related numerical variables, 2000-2012 means for all the time-related predictors (except for the previous performance of each country, where the mean only includes 2000-2008 data), and the response variable tot corresponds to the total number of medals won by each country in 2012. The test set consists of all the categorical and non-time related numerical variables, 2016 data for all the time-related predictors (except for the previous performance of each country, where 2012 measurements are used), and the response variable tot corresponds to the total number of medals won by each country in 2016. 
+We will fit the quasipoisson and the negative binomial models, using these data, as well as their zero-inflated versions.
+
+#### 2.3.2 Longitudinal analysis
+The long format method suggests that each time-related variable be gathered in one column and a separate column “year” be created. So, instead of having 5 columns for pop parameter, we will only have one pop column with all the measurements and the year column. To keep the previous performance as predictor, new columns prevtot and prevgold (N-1 performance for each year) have been created and then transposed along with the other columns. [1996 results](https://en.wikipedia.org/wiki/1996_Summer_Olympics_medal_table) for both total number of medals and gold medals have been added to the data set as previous performance for 2000 year. The missing values in these columns have been replaced by 0. The final training data set contains all the categorical variables, non-time related variables, time measurements column “year” up to and including 2012, one column for each time-related variable and prevtot, prevgold columns. The test data set only contains 2016 data in terms of time-related variables, prevtot and prevgold columns (with 2012 performance) and all the categorical and non-time related numerical variables. 
+
+This representation of data will allow us to fit the mixed linear models.
+```{r echo=FALSE, warning=FALSE, message=FALSE,results="hide"}
+
+#PREPARING DATA
+#transforming categorical variables into factors
+oldat$soviet<-as.factor(oldat$soviet)
+oldat$host<-as.factor(oldat$host)
+oldat$comm<-as.factor(oldat$comm)
+oldat$muslim<-as.factor(oldat$muslim)
+oldat$oneparty<-as.factor(oldat$oneparty)
+
+#LONG FORMAT PREPARATION       
+#adding 1996 results for the total number of medals and gold medals
+str(oldat)
+
+oldat1996<-data.frame(country.code=c("USA","GER","RUS","CHN","AUS","FRA","ITA","KOR","CUB","UKR","CAN","HUN","ROU","NED","POL","ESP","BUL","BRA","GBR","BLR","JPN","CZE","KAZ","GRE","SWE","KEN","SUI","NOR","DEN","TUR","NZL","BEL","NGR",
+                                  "JAM","RSA","PRK","IRL","FIN","INA","YUG","ALG","ETH","IRI","SVK","ARG","AUT","ARM","CRO","POR","THA","NAM","SLO","MAS","MDA","UZB","GEO","MAR","TRI","BDI","CRC","ECU","HKG","SYR","AZE","BAH","TPE",
+                                  "LAT","PHI","TGA","ZAM","IND","ISR","LTU","MEX","MGL","MOZ","PUR","TUN","UGA"),
+                 gold96=c(44,20,26,16,9,15,13,7,9,9,3,7,4,4,7,5,3,3,1,1,3,4,3,4,2,1,4,2,4,4,3,2,2,1,3,2,3,1,1,1,2,2,1,1,0,0,1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+                 tot96=c(101,65,63,50,41,37,35,27,25,23,22,21,20,19,17,17,15,15,15,15,14,11,11,8,8,8,7,7,6,6,6,6,6,6,5,5,4,4,4,4,3,3,3,3,3,3,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1))
+
+#creating N-1 edition won medals for each year
+oldatlong<-left_join(oldat,oldat1996,by="country.code")
+oldatlong$tot96<-ifelse(is.na(oldatlong$tot96),0,oldatlong$tot96)
+oldatlong$gold96<-ifelse(is.na(oldatlong$gold96),0,oldatlong$gold96)
+previoustot<-oldatlong[,c("country.code","tot96","tot00","tot04","tot08","tot12","gold96","gold00","gold04",
+                      "gold08","gold12")]
+colnames(previoustot)<-c("country.code","prevtot_2000","prevtot_2004","prevtot_2008","prevtot_2012","prevtot_2016",
+                         "prevgold_2000","prevgold_2004","prevgold_2008","prevgold_2012","prevgold_2016")        
+
+#renaming columns for the long format transformation
+colnames(oldatlong)<-c("country","country.code","gdp_2000","gdp_2004","gdp_2008","gdp_2012","gdp_2016","pop_2000","pop_2004","pop_2008","pop_2012","pop_2016","soviet","comm","muslim","oneparty","gold_2000","gold_2004","gold_2008","gold_2012","gold_2016","tot_2000","tot_2004","tot_2008","tot_2012","tot_2016","totgold_2000","totgold_2004","totgold_2008","totgold_2012",
+                   "totgold_2016","totmedals_2000","totmedals_2004","totmedals_2008","totmedals_2012","totmedals_2016","bmi","altitude","athletes_2000","athletes_2004","athletes_2008","athletes_2012","athletes_2016","host","gold_1996","tot_1996")
+oldat.long<-left_join(oldatlong,previoustot,by="country.code")
+
+#deleting the temporary 1996 columns
+oldat.long$gold_1996<-NULL
+oldat.long$tot_1996<-NULL
+str(oldat.long)
+
+#transforming data from wide to long format
+oldatresh<-oldat.long[,c(1:12,17:36,39:43,45:54)]
+oldat.long<-oldatresh%>%gather(key=variables,value=values,-c(country,country.code))%>%
+  separate(variables,into=c("variable","year"),sep="_")%>%spread(variable,values)
+oldat.long2<-left_join(oldat.long,oldatlong[,c(2,13:16,37:38,44)],by="country.code")
+head(oldat.long2)
+
+#creating a column for gdp per capita
+oldat.long2<-mutate(oldat.long2,gdp_per_cap=gdp/pop)
+head(oldat.long2)
+oldat.long2$gdp<-NULL
+oldat.long2$year<-as.integer(oldat.long2$year)
+str(oldat.long2)
+#training data set - long format
+long.training<-oldat.long2%>%subset(.,year<=2012)
+#test data set - long format
+long.test<-oldat.long2%>%subset(.,year==2016)
+
+
+#WIDE FORMAT PREPARATION
+
+#calculating the 2000-2012 means for gdp_per_cap, pop, athletes and 2000-2008 years mean of total number of medals per country and gold medals per country columns
+
+oldatwide<-mutate(oldat,gdp=rowMeans(oldat[,3:6],na.rm=TRUE))
+oldatwide<-mutate(oldatwide,pop=rowMeans(oldat[,8:11],na.rm=TRUE))
+oldatwide<-mutate(oldatwide,prevgold=rowMeans(oldat[,17:19],na.rm=TRUE))
+oldatwide<-mutate(oldatwide,prevtot=rowMeans(oldat[,22:24],na.rm=TRUE))
+oldatwide<-mutate(oldatwide,gdp_per_cap=gdp/pop)
+oldatwide<-mutate(oldatwide,athletes=round(rowMeans(oldat[,39:42],na.rm=TRUE),0))
+str(oldatwide)
+
+#Regarding the total number of gold medals and total number of medals, as we fit the model for 
+#the number of total and gold medals won by each country in 2012, let's keep only 2012 data
+#for total number of medals and total number of gold medals distributed.
+
+trainoldat<-oldatwide[,c(1,2,25,13:16,37,38,44,46:50)]
+str(trainoldat)
+#renaming the 2012 year columns
+###names(trainoldat)[names(trainoldat)=="gold12"]<-"gold"
+names(trainoldat)[names(trainoldat)=="tot12"]<-"tot"
+
+#preparing test data
+#using 2016 data and 2012 as previous performance for gold and total number of medals
+
+testoldat<-mutate(oldat[,c(1,2,26,13:16,37,38,44,7,12,20,25)],
+                  gdp_per_cap=gdp16/pop16)
+testoldat<-mutate(testoldat,oldat$athletes16)
+str(testoldat)
+
+#renaming response variable columns to make them consistent with training set
+names(testoldat)<-c("country","country.code","tot","soviet","comm","muslim","oneparty",
+                    "bmi","altitude","host","gdp","pop","prevgold","prevtot","gdp_per_cap","athletes")
+str(testoldat)
+
+```
+
+#### 2.3.3 Predictive performance measurements
+As the goal of the project is prediction, we need to specify the measurements we will use to evaluate the models and to select the best one. The following metrics will be calculated and compared (![e](https://latex.codecogs.com/gif.latex?e_%7Bt%7D) is the difference between the real values of the response variable and the fitted values):
+
+* Root mean squared error:
+
+  ![first](https://latex.codecogs.com/gif.latex?RMSE%3D%5Csqrt%7Bmean%28e_%7Bt%7D%5E2%29%7D)
+
+* Mean absolute error: 
+
+  ![second](https://latex.codecogs.com/gif.latex?MAE%3Dmean%28%5Cleft%20%7C%20e_t%20%5Cright%20%7C%29)
+
+
+The model with the lowest RMSE and MAE will be considered the most powerful in terms of prediction and will be selected as the best.
+
+## 3. Wide format analysis
+### 3.1 Exploratory analysis
+Before fitting any model, let us check if there are any visible trends in the data and any correlation between numerical predictors. As can be seen on the pairs plot below, the response variable tot is highly positively correlated with athletes, prevtot and prevgold predictors, and moderately positively correlated with pop parameter. The scatterplots confirm this pattern, showing a positive linear trend. At the same time, prevtot, prevgold and athletes predictors strongly correlate one with another. Consequently, we will only include one of these three variables in our models – the prevtot variable. The individual scatterplots also show that a log transformation of bmi, altitude, pop and gdp_per_cap variables could be useful. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=8}
+ggpairs(trainoldat[,c(3,8,9,11:15)],mapping=aes(alpha=0.3))
+```
+
+With regards to the categorical variables, as shown on the plots below, the countries hosting the competition, communist countries and one-party countries seem to win higher number of medals. It should be mentioned however that there are only three one-party countries with China having a very high number of medals, so the boxplot is heavily influenced by this observation.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=12}
+#let's now visualise the categorical variables
+
+#soviet covariate
+g1<-ggplot(trainoldat, aes(x=as.factor(soviet), y=tot,fill=as.factor(soviet)))+
+        geom_boxplot(alpha=0.5, outlier.alpha = 0)+theme(legend.position="right")+
+        geom_jitter(aes(colour=as.factor(soviet),alpha=0.3),show.legend=FALSE)+ 
+  scale_fill_discrete(name="Soviet variable",labels=c("Non-soviet","Soviet"))+
+  labs(x="Soviet / Non-soviet countries",y="Total number of medals")
+
+#muslim covariate
+g2<-ggplot(trainoldat, aes(x=as.factor(muslim), y=tot, fill=as.factor(muslim)))+
+        geom_boxplot(alpha=0.5, outlier.alpha=0)+theme(legend.position="right")+
+        geom_jitter(aes(colour=as.factor(muslim),alpha=0.3),show.legend=FALSE)+ 
+  scale_fill_discrete(name="Muslim variable", labels=c("Non-muslim","Muslim"))+
+  labs(x="Muslim / Non-muslim countries",y="Total number of medals")
+
+#oneparty covariate
+g3<-ggplot(trainoldat, aes(x=as.factor(oneparty), y=tot, fill=as.factor(oneparty)))+
+        geom_boxplot(alpha=0.5, outlier.alpha=0)+theme(legend.position="right")+
+        geom_jitter(aes(colour=as.factor(oneparty),alpha=0.3),show.legend=FALSE)+
+  scale_fill_discrete(name="One party variable", labels=c("Multiple parties","One party"))+
+  labs(x="One party / Multiple parties countries",y="Total number of medals")
+
+#comm covariate
+g4<-ggplot(trainoldat, aes(x=as.factor(comm), y=tot, fill=as.factor(comm)))+
+        geom_boxplot(alpha=0.5, outlier.alpha=0)+
+        geom_jitter(aes(colour=as.factor(comm),alpha=0.3),show.legend=FALSE)+
+  scale_fill_discrete(name="Communist variable", labels=c("Non-communist","Communist"))+
+  labs(x="Communist / Non-communist countries",y="Total number of medals")
+
+#host covariate
+g5<-ggplot(trainoldat, aes(x=as.factor(host), y=tot, fill=as.factor(host)))+
+        geom_boxplot(alpha=0.5, outlier.alpha=0)+theme(legend.position="right")+
+        geom_jitter(aes(colour=as.factor(host),alpha=0.3),show.legend=FALSE)+
+  scale_fill_discrete(name="Host variable", labels=c("Non-host","Host"))+
+  labs(x="Host/ Non-host countries",y="Total number of medals")
+
+#visualising the graphs
+grid.arrange(g1,g2,g3,g4,nrow=2)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=6, fig.height=6}
+g5
+```
+
+Before including the categorical variables in the models, we need to check whether they are mutually independent. Two methods will be used to assess the independence: the chi-squared test and Fisher test. The results of the check are given below:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE,fig.align="center", fig.cap="Chi-squared and Fisher tests"}
+#let's check whether the categorical variables are independent, applying chi-squared and Fisher tests:
+# oneparty vs. comm
+chit_one_com<-chisq.test(trainoldat$oneparty,trainoldat$comm)
+fish_one_com<-fisher.test(trainoldat$oneparty,trainoldat$comm)
+
+#both chi-squared and Fisher tests confirm that the oneparty and comm variables are independent
+#as the p-value is greater than 0.05
+
+#oneparty vs. Soviet
+chit_one_sov<-chisq.test(trainoldat$oneparty,trainoldat$soviet)
+fish_one_sov<-fisher.test(trainoldat$oneparty,trainoldat$soviet)
+#both chi-squared and Fisher tests confirm that the oneparty and soviet variables are independent
+#as the p-value is greater than 0.05
+
+#oneparty vs. muslim
+chit_one_mus<-chisq.test(trainoldat$oneparty,trainoldat$muslim)
+fish_one_mus<-fisher.test(trainoldat$oneparty,trainoldat$muslim)
+#both chi-squared and Fisher tests confirm that the oneparty and muslim variables are independent
+#as the p-value is greater than 0.05
+
+#oneparty vs. host
+chit_one_hos<-chisq.test(trainoldat$oneparty,trainoldat$host)
+fish_one_hos<-fisher.test(trainoldat$oneparty,trainoldat$host)
+#both chi-squared and Fisher tests confirm that the oneparty and host variables are independent
+#as the p-value is greater than 0.05
+
+#soviet vs. muslim
+chit_sov_mus<-chisq.test(trainoldat$soviet,trainoldat$muslim)
+fish_sov_mus<-fisher.test(trainoldat$soviet,trainoldat$muslim)
+#both chi-squared and Fisher tests confirm that the soviet and muslim variables are independent
+#as the p-value is greater than 0.05
+
+
+#soviet vs. comm
+chit_sov_com<-chisq.test(trainoldat$soviet,trainoldat$comm)
+fish_sov_com<-fisher.test(trainoldat$soviet,trainoldat$comm)
+#both chi-squared and Fisher tests confirm that the soviet and comm variables are not independent
+#as the p-value for both tests is less than 0.05 - we will need to drop one of them.
+#We will drop the soviet variable.
+
+#soviet vs. host
+chit_sov_hos<-chisq.test(trainoldat$soviet,trainoldat$host)
+fish_sov_hos<-fisher.test(trainoldat$soviet,trainoldat$host)
+#both chi-squared and Fisher tests confirm that the soviet and host variables are independent
+#as the p-value is greater than 0.05
+
+#comm vs. muslim
+chit_com_mus<-chisq.test(trainoldat$comm,trainoldat$muslim)
+fish_com_mus<-fisher.test(trainoldat$comm,trainoldat$muslim)
+#both chi-squared and Fisher tests confirm that the comm and muslim variables are independent
+#as the p-value is greater than 0.05
+
+#comm vs. host
+chit_com_hos<-chisq.test(trainoldat$comm,trainoldat$host)
+fish_com_hos<-fisher.test(trainoldat$comm,trainoldat$host)
+#both chi-squared and Fisher tests confirm that the comm and host variables are independent
+#as the p-value is greater than 0.05
+
+#muslim vs. host
+chit_mus_hos<-chisq.test(trainoldat$muslim,trainoldat$host)
+fish_mus_hos<-fisher.test(trainoldat$muslim,trainoldat$host)
+#both chi-squared and Fisher tests confirm that the muslim and host variables are not independent
+#for chi-squared test the p-value is on the boundary at 0.0592 and for Fisher test 
+#the p-value is less than 0.005 at 0.02217
+
+#creating a table with the results of chi-squared and Fisher tests:
+cat_var_tests<-data.frame("Variables"=c("oneparty vs. comm", "oneparty vs. soviet","oneparty vs. muslim", "oneparty vs. host","soviet vs. muslim", "soviet vs. comm", "soviet vs. host", "comm vs. muslim", "comm vs. host", "muslim vs. host"),
+                          "Chi-squared test"=round(c(chit_one_com$p.value,chit_one_sov$p.value,chit_one_mus$p.value,
+                       chit_one_hos$p.value,chit_sov_mus$p.value,chit_sov_com$p.value,chit_sov_hos$p.value,
+                       chit_com_mus$p.value,chit_com_hos$p.value,chit_mus_hos$p.value),2),
+                     "Fisher test" = round(c(fish_one_com$p.value,fish_one_sov$p.value,fish_one_mus$p.value,fish_one_hos$p.value,
+                       fish_sov_mus$p.value,fish_sov_com$p.value,fish_sov_hos$p.value,fish_com_mus$p.value,
+                       fish_com_hos$p.value,fish_mus_hos$p.value),2),"Independence"=c(rep("independent",5),"associated",rep("independent",3),"on the boundary"))
+
+kable(cat_var_tests)
+```
+
+It can be concluded from the association check that the soviet and comm predictors are not independent. Therefore, we will only use the comm variable for the further analysis and will drop the soviet predictor. 
+The goal of the project being the prediction of total number of medals won by each country, we will consider a Poisson model, as it’s suitable for a count response. The main assumption of this model is that the mean and variance are equal. The mean of the response variable is equal to 8.85 and the variance – to 294.09. 
+```{r echo=FALSE, warning=FALSE, message=FALSE,results="hide"}
+#calculating the mean - 8.85
+mean(trainoldat$tot)
+#calculating the variance - 294.09
+var(trainoldat$tot)
+#checking for excess of zeros
+nrow(trainoldat[trainoldat$tot==0,])
+nrow(trainoldat)
+24/108
+#22.2% of zeros in tot column
+
+```
+This indicates overdispersion of the data. A quasi-poisson and a negative binomial will be appropriate for this data and will allow us to deal with the overdispersion. 
+As can be seen on the histogram, there are quite a lot of zeros in the distribution (22.2%):
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="left", fig.width=6, fig.height=6}
+#visualising the distribution of the response variable
+hist(trainoldat$tot, xlab="Total number of medals", main ="Histogram")
+```
+
+Considering the high number of zeros in the distribution of the response variable, the zero-inflated versions of quasi-poisson and negative binomial models can also be considered.
+
+### 3.2 Fitting the models
+#### 3.2.1 Quasi-poisson model
+We have fitted the quasi-poisson model including all the predictors:
+```{r warning=FALSE, message=FALSE}
+mod1<-glm(tot~comm+oneparty+host+bmi+altitude+pop+gdp_per_cap+prevtot,family=quasipoisson,data=trainoldat)
+```
+and then have subsequently dropped insignificant variables one by one, using F test to evaluate the significance of the predictors. The final model consists of comm, host and prevtot parameters, the dispersion parameter is 4.33:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+X2 <- sum(resid(mod1, type = "pearson")^2)
+dp <- X2 / mod1$df.res
+
+
+drop1(mod1,test="F")
+#let's drop oneparty variable, it has the highest p-value at 0.97
+mod2<-glm(tot~comm+host+bmi+altitude+pop+gdp_per_cap+prevtot,
+              family=quasipoisson,data=trainoldat)
+drop1(mod2,test="F")
+#let's drop pop variable with p-value at 0.72
+mod3<-glm(tot~comm+host+bmi+altitude+gdp_per_cap+prevtot,
+          family=quasipoisson,data=trainoldat)
+
+drop1(mod3,test="F")
+#dropping altitude variable with p-value at 0.47
+mod4<-glm(tot~comm+host+bmi+gdp_per_cap+prevtot,
+          family=quasipoisson,data=trainoldat)
+drop1(mod4,test="F")
+#dropping bmi variable with p-value at 0.35
+mod5<-glm(tot~comm+host+gdp_per_cap+prevtot,
+          family=quasipoisson,data=trainoldat)
+drop1(mod5,test="F")
+#dropping gdp_per_cap parameter with p-value at 0.09
+mod6<-glm(tot~comm+host+prevtot,
+          family=poisson,data=trainoldat)
+#let's calculate the dispersion parameter:
+X2 <- sum(resid(mod6, type = "pearson")^2)
+dp <- X2 / mod6$df.res
+dp #it's equal to 4.33
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(mod6,dp)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE,results="hide"}
+# all the parameters are significant in this model, so we keep: comm, host and tot parameters)
+#checking goodness of fit:
+qchisq(df=104,p=0.95)
+```
+As we can see from the output, the residual deviance of the model is quite high, compared to the chi-squared distribution value for 104 degrees of freedom – 451.79 against 128.80, indicating a lack of fit. The AIC parameter is quite high as well at 752.78. Nevertheless, as the goal of the project is prediction, we will evaluate all the models based on their predictive performance rather than on the goodness of fit.
+
+#### 3.2.2 Negative binomial model
+Similarly, we have fitted the negative binomial model, including all the predictors and then have dropped the insignificant variables, using the p-value as metric. The final model includes the same predictors as the quasi-poisson: comm, host and prevtot. In contrast, it offers a better fit, as the residual deviance is lower than the chi-squared distribution value for 104 degrees of freedom – 124.55 against 128.80. It also gives the lower AIC at 567.28:
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+mod.nb<-glm.nb(tot~comm+oneparty+host+bmi+altitude+pop+gdp_per_cap+prevtot,
+               data=trainoldat)
+summary(mod.nb)
+
+#let's drop insignificant parameters from the model
+#dropping bmi
+mod.nb2<-glm.nb(tot~comm+oneparty+host+altitude+pop+gdp_per_cap+prevtot,
+                data=trainoldat)
+summary(mod.nb2)
+#dropping pop
+mod.nb3<-glm.nb(tot~comm+oneparty+host+altitude+gdp_per_cap+prevtot,
+                data=trainoldat)
+summary(mod.nb3)
+#dropping oneparty
+mod.nb4<-glm.nb(tot~comm+host+altitude+gdp_per_cap+prevtot,
+                data=trainoldat)
+summary(mod.nb4)
+
+#dropping gdp_per_cap
+mod.nb5<-glm.nb(tot~comm+host+altitude+prevtot,
+                data=trainoldat)
+summary(mod.nb5)
+#dropping altitude
+mod.nb6<-glm.nb(tot~comm+host+prevtot,
+                data=trainoldat)
+#chi-sq. coefficient for 104 degrees of freedom is 128.8 and the residual deviance is 124.55.
+#This indicates that there is no lack of fit for the model. 
+qchisq(df=104,p=0.95)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(mod.nb6)
+```
+#### 3.2.3 Normal linear model
+The next model that has been fitted is the normal linear model. The variables selection has been executed, 
+using the stepwise selection (step() function in R) and p-value metric. The final model consists of pop and prevtot parameters, the AIC is 644.63:
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+str(trainoldat)
+norm.mod<-lm(tot~comm+oneparty+host+bmi+altitude+pop+gdp_per_cap+prevtot,data=trainoldat[,3:15])
+norm.mod1<-step(norm.mod,direction="both")
+summary(norm.mod1)
+#let's drop host variable as it's p-value is 0.09
+norm.mod2<-lm(tot ~ pop + prevtot,data=trainoldat)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(norm.mod2)
+```
+The residuals plots indicate the violation of heteroscedasticity and normal distribution assumptions due to the outliers. We will not remove these outliers, as we care about all the countries predictions. We will still consider the normal linear model along with the others.
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=12}
+par(mfrow=c(2,2))
+plot(norm.mod2)
+```
+
+#### 3.2.4. Zero-inflated models
+As revealed during the exploratory analysis, the zero-inflated models seem appropriate for the data. We have fitted both zero-inflated quasi-poisson and negative binomial models. The prevtot variable has been used as covariate for the zero-inflation part of the model and comm, host predictors have been put in the poisson / negative binomial parts of the models. As illustrated by the R output below, the zero-inflation coefficient is significant for the poisson model, so the increase of prevtot predictor diminishes the odds of not receiving any medal at all.
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#zero-inflated poisson model
+zpois<-zeroinfl(tot~comm+host|prevtot,data=trainoldat)
+summary(zpois)
+```
+The corresponding zero-inflation coefficient for the negative binomial model is insignificant:
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+zeronb<- zeroinfl(tot~comm+host|prevtot,
+                       data = trainoldat, dist = "negbin")
+summary(zeronb)
+```
+We can compare the AIC parameters, measuring the trade-off between the goodness of fit and the simplicity of the models:
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#let's compare the AIC parameters of the models
+aic_perf<-cbind("Quasi-poisson"=AIC(mod6),"Negative Binomial"=c(mod.nb6$aic),
+      "Normal linear"=AIC(norm.mod2),
+      "Zero-inflated poisson"=AIC(zpois),
+      "Zero-inflated negative binomial"=AIC(zeronb))
+kable(round(aic_perf,2))
+```
+
+As illustrated by the table, the negative binomial model performs the best in terms of the fit, but considering the goal of the project, we will not exclude any of the models at this stage.
+
+### 3.3 Longitudinal analysis
+#### 3.3.1 Exploratory analysis
+A different approach to the time-related data has been applied in the long format analysis, compared to the wide one, so the relationship between the variables may have changed. We need to check these relationships and the potential correlation between the variables again. As demonstrated by the pairs plot below, similarly to the wide format analysis results, the response variable has a high positive correlation with athletes, prevgold and prevtot predictors and a moderate positive correlation with pop parameter. The prevtot, prevgold and athletes variables are mutually strongly positively correlated. Therefore, we will only include the prevtot predictor out of the three parameters mentioned above. The new variables, included in the analysis, such as totgold and totmedals are highly correlated with year. So, we will only consider the year predictor in our model.
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=8}
+#ggpairs plot:
+ggpairs(long.training[,c(3,4,6:11,16,17,19)],mapping=aes(alpha=0.3))
+```
+The categorical variables, used in the longitudinal approach, are the same as in the wide one, so the findings from the exploratory analysis mentioned above are relevant here as well. This means, we will drop the soviet variable and only include the comm predictor in our models due to their dependence.
+
+#### 3.3.2 Linear mixed models
+A linear mixed model is appropriate for the data in a long format with repeated measurements over time. The following predictors can be considered as random effects: comm, muslim, oneparty, host, country, muslim:country,  comm:country, host:country, oneparty:country. 
+The first model we have considered is a mixed linear model with a random intercept. A model including all the numerical predictors as fixed effects and country variable as a random effect has been created:
+
+```{r warning=FALSE, message=FALSE}
+lin.mix.mod<-lmer(tot ~ year+gdp_per_cap+pop+prevtot+bmi+altitude+(1|country),data=long.training)
+```
+A stepwise selection using conditional AIC parameter has been applied (stepcAIC() function in R) and this has resulted in the following mixed linear model with two intercepts:
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+mod.mix<-stepcAIC(lin.mix.mod,groupCandidates=c("comm","muslim","oneparty","host","country","muslim:country","comm:country",
+                                               "host:country","oneparty:country"),
+                 direction="both",trace=TRUE)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+mod.mix$finalModel@call
+```
+Looking at the confidence intervals of the model, the oneparty random intercept as well as gdp_per_cap, pop, bmi and altitude parameters are insignificant, they have been dropped one by one, checking the confidence intervals each time.
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+mod.intercept<-lmer(tot~ year + gdp_per_cap + pop + prevtot + bmi + altitude + (1 | host) + (1 | oneparty),data=long.training)
+summary(mod.intercept)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+round(confint(mod.intercept,oldNames=FALSE),2)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+#excluding altitude
+mod.intercept<-lmer(tot~ year + gdp_per_cap + pop + prevtot + bmi + (1 | host) + (1 | oneparty),data=long.training)
+round(confint(mod.intercept,oldNames=FALSE),2)
+#excluding bmi
+mod.intercept<-lmer(tot~ year + gdp_per_cap + pop + prevtot + (1 | host) + (1 | oneparty),data=long.training)
+round(confint(mod.intercept,oldNames=FALSE),2)
+#excluding pop
+mod.intercept<-lmer(tot~ year + gdp_per_cap + prevtot + (1 | host) + (1 | oneparty),data=long.training)
+round(confint(mod.intercept,oldNames=FALSE),2)
+#excluding gdp_per_cap
+mod.intercept<-lmer(tot~ year + prevtot + (1 | host) + (1 | oneparty),data=long.training)
+round(confint(mod.intercept,oldNames=FALSE),2)
+#excluding the oneparty random intercept
+```
+The final random intercept model includes year and prevtot predictors as fixed effects and host variable as a random effect:
+```{r warning=FALSE, message=FALSE}
+mod.intercept<-lmer(tot~year + prevtot + (1 | host),data=long.training)
+```
+We have tried to include the random slope parameter in both correlated and uncorrelated versions, but the slopes are insignificant in both models, as demonstrated below:
+
+* Model with correlated intercept and slope random effects:
+```{r warning=FALSE, message=FALSE}
+mod.slope<-lmer(tot~year + prevtot + (1 +prevtot| host),data=long.training)
+```
+Confidence intervals:
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+round(confint(mod.slope,oldNames=FALSE),2)
+```
+* Model with uncorrelated intercept and slope random effects:
+```{r warning=FALSE, message=FALSE}
+mod.slope.uncorr<-lmer(tot~year + prevtot + (1|host)+(0 +prevtot| host),data=long.training)
+```
+Confidence intervals:
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+round(confint(mod.slope.uncorr,oldNames=FALSE),2)
+```
+So, the final model that will be used for prediction is the random intercept model. As the goal of the project is prediction, we will not look at the coefficients in detail.
+
+## 4.	Models comparison and final model selection
+The predictions have been calculated for both training and test data set, using predict() function. We can now compare all the models described above, using MAE and RMSE parameters and will select the most powerful model. The accuracy() function from forecast package has been used to calculate the predictive performance metrics. The table below shows the results for both training and test data sets:
+
+**2012 Prediction:**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#calculating 2012 predictions based on training set
+predqpoistr<-predict(mod6,newdata=trainoldat,type="response")
+prednbtr<-predict(mod.nb6,newdata=trainoldat,type="response")
+predzpoistr<-predict(zpois,newdata=trainoldat,type="response")
+predznbtr<-predict(zeronb,newdata=trainoldat,type="response")
+prednormtr<-predict(norm.mod2,newdata=trainoldat,type="response")
+predintercepttr<-predict(mod.intercept,newdata=long.training[long.training$year==2012,],type="response")
+
+
+#measuring RMSE and MAE of the models:
+comtr<-rbind(Quasipoisson=accuracy(predqpoistr,trainoldat$tot),Neg_binomial=accuracy(prednbtr,trainoldat$tot),
+             Zero_infl_Poisson=accuracy(predzpoistr,trainoldat$tot),Zero_infl_nb=accuracy(predznbtr,trainoldat$tot),Normmod=accuracy(prednormtr,trainoldat$tot),
+             ML_intercept=accuracy(predintercepttr,trainoldat$tot))
+
+rownames(comtr)<-c("Quasi-poisson","Negative binomial","Zero-inflated poisson","Zero-inflated negative binomial", "Normal linear",
+                   "LMM with random intercept")
+#visualising the results
+kable(round(comtr[,c(2,3)],2))
+```
+
+
+
+**2016 Prediction:**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#let's predict the 2016 values based on the test set:
+predqpois<-predict(mod6,newdata=testoldat,type="response")
+prednb<-predict(mod.nb6,newdata=testoldat,type="response")
+predzpois<-predict(zpois,newdata=testoldat,type="response")
+predznb<-predict(zeronb,newdata=testoldat,type="response")
+prednorm<-predict(norm.mod2,newdata=testoldat,type="response")
+predlmerintercept<-predict(mod.intercept,newdata=long.test[long.test$year==2016,],type="response")
+
+#predictions table
+pred2016<-cbind(round(predqpois,0),round(prednb,0),round(predzpois,0),round(predznb,0),round(prednorm,0),round(predlmerintercept,0),testoldat$tot)
+colnames(pred2016)<-c("Quasipoisson","Neg_binomial","Zero_inf_quasiposisson","Zero_inf_neg_binomial","Normal linear","LMM with random intercept","Actual")
+pred2016<-as.data.frame(pred2016)
+pred2016<-mutate(pred2016,country=as.character(testoldat$country))
+
+#measuring RMSE and MAE:
+com<-rbind(Quasipoisson=accuracy(predqpois,testoldat$tot),Neg_binomial=accuracy(prednb,testoldat$tot),
+           Zero_infl_Poisson=accuracy(predzpois,testoldat$tot),Zero_infl_nb=accuracy(predznb,testoldat$tot),Norm_lin=accuracy(prednorm,testoldat$tot),ML_intercept=accuracy(predlmerintercept,testoldat$tot))
+rownames(com)<-c("Quasi-poisson","Negative binomial","Zero-inflated poisson","Zero-inflated negative binomial","Normal linear","LMM with random intercept")
+#visualising results:
+kable(round(com[,c(2,3)],2))
+```
+
+As illustrated in the tables, the mixed linear model with random intercept offers the best results in terms of prediction for both training and test data sets with RMSE at 3.77 and 4.41 and MAE at 2.41 and 2.64 respectively. Consequently, this model will be selected as the final one. The visual representation of the 2016 prediction results for all the models is given below. Interestingly, the negative binomial model, which didn’t show any lack of fit, has the worst predictive performance:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=8}
+#preparing data for visualisation of the results, splitting the data into 3 sets:
+#countries with actual medals less than 10
+a1<-pred2016[pred2016$Actual<=10,]
+#countries with actual medals from 10 to 40
+a2<-pred2016[pred2016$Actual>=10&pred2016$Actual<=40,]
+#countries with medals more than 40
+a3<-pred2016[pred2016$Actual>40,]
+
+#reshaping data for the plots
+Melted1<-reshape2::melt(a1, id.var='country')
+colnames(Melted1)<-c("country","Models","value")
+#plotting for countries with <10 medals
+gpr1<-ggplot(Melted1,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend = TRUE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with less than 10 medals")+theme(plot.title = element_text(size=10))
+
+
+#reshaping data for the plots
+Melted2<-reshape2::melt(a2, id.var='country')
+colnames(Melted2)<-c("country","Models","value")
+#plotting for countries with >=10 and <=40 medals
+gpr2<-ggplot(Melted2,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend = FALSE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with 10-40 medals")+theme(plot.title = element_text(size=10))
+
+#reshaping data for the plots
+Melted3<-reshape2::melt(a3, id.var='country')
+colnames(Melted3)<-c("country","Models","value")
+#plotting for countries with more than 40 medals
+gpr3<-ggplot(Melted3,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend = FALSE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with more than 40 medals")+theme(plot.title = element_text(size=10))
+
+#visualising the plots together
+grid.arrange(gpr3,gpr2,gpr1,
+  widths = c(1, 1),
+  layout_matrix = rbind(c(1, 2),
+                        c(3, 3))
+)
+```
+
+The final model predictions against the actual values plots can be seen below:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.width=12, fig.height=8}
+#showing results only for the best model vs. the actual values
+#splitting into 3 sets as above
+a4<-pred2016[,c("country","LMM with random intercept","Actual")]
+a4.1<-a4[a4$Actual<=10,]
+a4.2<-a4[a4$Actual>=10&a4$Actual<=40,]
+a4.3<-a4[a4$Actual>40,]
+#reshaping data for the plots
+Melted1.1<-reshape2::melt(a4.1, id.var='country')
+colnames(Melted1.1)<-c("country","Models","value")
+#plotting for countries with less than 10 medals
+gpr1<-ggplot(Melted1.1,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend=TRUE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with less than 10 medals")+theme(plot.title = element_text(size=10))
+
+#reshaping data for the plots
+Melted2.1<-reshape2::melt(a4.2, id.var='country')
+colnames(Melted2.1)<-c("country","Models","value")
+#plotting for countries with medals from 10 to 40
+gpr2<-ggplot(Melted2.1,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend = FALSE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with 10-40 medals")+theme(plot.title = element_text(size=10))
+
+#reshaping data for the plots
+Melted3.1<-reshape2::melt(a4.3, id.var='country')
+colnames(Melted3.1)<-c("country","Models","value")
+#plotting for countries with >40 medals
+gpr3<-ggplot(Melted3.1,aes(x=country,y=value,col=Models))+
+  geom_point(alpha=0.3,show.legend = FALSE)+
+  ylab("Number of medals")+
+  theme(axis.text.x = element_blank())+
+  ggtitle("Countries with more than 40 medals")+theme(plot.title = element_text(size=10))
+
+#visualising the plots together
+grid.arrange(gpr3,gpr2,gpr1,
+             widths = c(1, 1),
+             layout_matrix = rbind(c(1, 2),
+                                   c(3, 3)))
+```
+
+## 5.	Comparison with online predictions
+We can now compare the predictions obtained, using the final model with the predictions available online. Let us compare the results for the [6 best performing countries](https://www.topendsports.com/events/summer/medal-tally/predicted-2016.htm) :
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#comparing results with online predictions for 6 top performing countries
+online.pred<-data.frame(country=c("United States","China","United Kingdom","Russia","France","Germany"),
+                        WSJ=c(101,82,52,51,43,51),
+                        Goldman_Sachs=c(106,89,59,58,36,46),
+                        Gonzales_Tuck_School=c(105,89,67,62,35,48),
+                        Forrest=c(99,90,51,42,30,36),
+                        Bredtmann=c(100,86,64,53,34,43),
+                        Kupper=c(102,74,43,83,37,41))%>%inner_join(pred2016,by="country")
+
+online.pred<-online.pred[,c(1,14,13,2:7)]
+
+#showing the results
+kable(online.pred)
+```
+
+We can also compare the performance metrics for the models, based on the 6 observations:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#evaluating the performance in terms of RMSE and MAE
+accur<-rbind(WSJ=accuracy(online.pred$WSJ,online.pred$Actual),
+             Goldman_Sachs=accuracy(online.pred$Goldman_Sachs,online.pred$Actual),
+             Gonzales_Tuck_School=accuracy(online.pred$Gonzales_Tuck_School,online.pred$Actual),
+             Forrest=accuracy(online.pred$Forrest,online.pred$Actual),
+             Bredtmann=accuracy(online.pred$Bredtmann,online.pred$Actual),
+             Kupper=accuracy(online.pred$Kupper,online.pred$Actual),
+             Final_model=accuracy(online.pred$`LMM with random intercept`,online.pred$Actual)
+             )
+rownames(accur)<-c("WSJ","Goldman Sachs","Gonzales (Tuck School)","Forrest","Bredtmann","Kupper","LMM with random intercept")
+#showing the results of evaluation: 
+kable(round(accur[,c(2,3)],2))
+```
+
+As demonstrated above, our model is the 5th best performing, leaving behind Forrest and Kupper models. Obviously, this comparison is quite limited, all the observations would need to be compared to judge objectively.
+
+## 6.	Conclusions
+The project’s target has been to predict the total number of medals for each country, participating in 2016 Rio Olympics. The constraint of the analysis has been to use the data available before the start of the games – the data set rioolympics.csv. The missing data has been filled in or replaced by the overall mean parameter (bmi for Kosovo and Puerto Rico). The gdp predictor has been transformed into gdp per capita.
+
+Two approaches to the data have been considered: the wide format and the longitudinal analysis. In both cases, the training set included all the previous years data up to and including 2012, the test set consisted of 2016 data (except for the previous performance predictors where 2012 data was used). For the wide format analysis, the time-related covariates in the training set have been transformed by calculating the means over 2000-2012 years (except for the previous performance where the means were taken up to 2008 instead of 2012). In the long format analysis, the previous performance predictors have been added as well (including additional 1996 data, as previous performance for 2000 year).
+
+The exploratory analysis in both approaches has revealed strong positive correlation between prevtot, prevgold and athletes covariates and high positive correlation between the response and each of these predictors. Thus, only prevtot predictor out of the three covariates has been included in models. In the long format analysis, the totmedals and totgold have shown strong positive correlation with the year predictor, only the latter has been considered in the models. The categorical variables association check has resulted in excluding the soviet variable from the analysis, due to its dependence on the comm predictor. The distribution of the response variable indicated the presence of potential overdispersion in the data as well as the excess of zeros.
+
+Five models have been fitted within the wide format approach: the quasi-poisson and negative binomial models (to account for the overdispersion) and zero-inflated poisson and negative binomial models (to take into consideration the excess of zeros). As per the AIC comparison, the negative binomial model has shown the best performance in terms of fit. 
+Three mixed linear models have been fitted within the long format approach: the random intercept model, the model with correlated random intercept and slope and the model with uncorrelated random intercept and slope. As result, only the random intercept model has been retained.
+
+The predictive performance of all the models has been evaluated for both 2012 and 2016 results, by calculating root mean squared error and mean absolute error. Paradoxically, the negative binomial model has shown the worst performance even if it was indicating no lack of fit. The best model overall, is the mixed linear model with random intercept with RMSE at 4.41 and MAE 2.64 for the 2016 predictions.
+
+Finally, we have compared our best model performance with the predictions available online from 6 different sources for top 6 countries in terms of total number of medals won in 2016. Our model is the 5th best, when comparing RMSE and MAE metrics.
+
+## 7.	Possible improvements
+The below options could be explored to improve the predictive performance:
+
+* Applying a log transformation of bmi, altitude, pop and gdp_per_cap predictors;
+* Exploring a different approach to time series data – using the lagged variables instead of calculating the means in the wide format analysis;
+* Including additional predictors (Olympic training funding, total governmental expenses on sports and health, media distractions, human development indexes, gender inequality etc);
+* Fitting a principal components regression – this model would help to overcome the multicollinearity of the data;
+*	Including new random effects in the linear mixed model – more complex models in terms of the random effects’ combination could offer a better model;
+*	Fitting a Poisson mixed model or a negative binomial mixed model.
+
