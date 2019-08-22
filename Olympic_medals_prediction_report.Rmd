@@ -7,7 +7,6 @@ output: rmarkdown::github_document
 ---
 ## Predicting the 2016 Olympic Medals Using General Linear Models and Linear Mixed Models
 
-
 *****
 ## 1.	Introduction
 The goal of the project is to predict the total number of medals won by each country in 2016 Olympics based on several predictors available before August 2016. The questions of interest are the following:
