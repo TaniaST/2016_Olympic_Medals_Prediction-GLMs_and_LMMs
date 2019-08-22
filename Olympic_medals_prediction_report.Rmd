@@ -776,8 +776,9 @@ accur<-rbind(WSJ=accuracy(online.pred$WSJ,online.pred$Actual),
              Final_model=accuracy(online.pred$`LMM with random intercept`,online.pred$Actual)
              )
 rownames(accur)<-c("WSJ","Goldman Sachs","Gonzales (Tuck School)","Forrest","Bredtmann","Kupper","LMM with random intercept")
-#showing the results of evaluation: 
-kable(round(accur[,c(2,3)],2))
+#showing the results of evaluation:
+accur_vis<-as.data.frame(round(accur[,c(2,3)],2))
+kable(accur_vis[order(accur_vis$RMSE),])
 ```
 
 As demonstrated above, our model is the 5th best performing, leaving behind Forrest and Kupper models. Obviously, this comparison is quite limited, all the observations would need to be compared to judge objectively.

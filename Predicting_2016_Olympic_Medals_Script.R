@@ -650,4 +650,7 @@ accur<-rbind(WSJ=accuracy(online.pred$WSJ,online.pred$Actual),
 rownames(accur)<-c("WSJ","Goldman_Sachs","Gonzales_Tuck_School","Forrest","Bredtmann","Kupper","Final model")
 #showing the results of evaluation: 
 accur[,c(2,3)]
+accur_vis<-as.data.frame(round(accur[,c(2,3)],2))
+
+kable(accur_vis[order(accur_vis$RMSE),])
 #our model is the 5th best performing out of 7
