@@ -1,4 +1,4 @@
-# 2016 Olympic Medals Prediction-GLMs and LMMs
+# 2016 Olympic Medals Prediction - GLMs and LMMs
 This repository contains code for the 2016 Olympic medals prediction using:
 
 * **generalised linear models (GLMs)** - quasi-poisson, negative binomial, normal linear models;
